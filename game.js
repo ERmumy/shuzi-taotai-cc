@@ -7,11 +7,11 @@
  *  - 每小轮各报 1..当前人数 的整数，同时亮出。
  *  - 第1步 撞车作废：被≥2人报的数字作废，这些人喝当轮基础罚酒，留场。
  *  - 第2步 动态放生：未撞车数字里，从小到大放生若干名（通关出局）。
- *  - 第3步 安然令牌：放生后，留场玩家中“最大独有数字”者得 1 枚令牌。
+ *  - 第3步 免酒令牌：放生后，留场玩家中“最大独有数字”者得 1 枚令牌。
  *  - 第4步 全员撞车：无人独有则全员喝基础罚酒，原地重报（小轮序号不变、不发令牌）。
  *  - 罚酒递增：第1-2小轮1口，第3-4小轮2口，第5小轮起3口（1杯）封顶。
  *  - 终局(剩2人) 斗鸡博弈；2,2 触发复活；复活接受则三人最终局。
- *  - 安然令牌：每个结算阶段每人至多用1枚，抵 1 杯（3口）。
+ *  - 免酒令牌：每个结算阶段每人至多用1枚，抵 1 杯（3口）。
  */
 
 const SIP_PER_CUP = 3; // 3 口 = 1 杯
@@ -116,7 +116,7 @@ class Game {
       connected: true,
       alive: false,     // 是否在场上
       escaped: false,    // 是否已通关放生
-      tokens: 0,         // 安然令牌数
+      tokens: 0,         // 免酒令牌数
       drinks: 0,         // 累计口数
       pick: null,        // 本轮出数（仅服务端可见，亮数时才公开）
       consent: null,     // 终局同意/拒绝
@@ -223,7 +223,7 @@ class Game {
     const released = uniquePlayers.slice(0, releaseN);
     const remainingUnique = uniquePlayers.slice(releaseN);
 
-    // 第3步 安然令牌：留场玩家中最大独有数字
+    // 第3步 免酒令牌：留场玩家中最大独有数字
     let tokenWinnerId = null;
     if (remainingUnique.length > 0) {
       tokenWinnerId = remainingUnique.reduce((a, b) => (b.pick > a.pick ? b : a)).id;
@@ -247,7 +247,7 @@ class Game {
     const parts = [];
     if (collided.length) parts.push(`${collided.length} 人撞车各喝 ${base} 口`);
     if (released.length) parts.push(`放生 ${released.map(p => p.name).join('、')}（通关）`);
-    if (tokenWinnerId) parts.push(`${this.players.get(tokenWinnerId).name} 抢到安然令牌🛡️`);
+    if (tokenWinnerId) parts.push(`${this.players.get(tokenWinnerId).name} 抢到免酒令牌🛡️`);
     return parts.join('；') || '本轮无事发生';
   }
 
@@ -365,13 +365,13 @@ class Game {
     const invitee = this.players.get(id);
     const two = this.alivePlayers();
     if (choice === 'accept') {
-      invitee.tokens += 1;       // 正式安然令牌
+      invitee.tokens += 1;       // 正式免酒令牌
       invitee.escaped = false;
       invitee.alive = true;
       invitee.finishRank = null;
       for (const pl of this.alivePlayers()) pl.pick = null;
       this.phase = PHASE.FINAL_COLLECT;
-      this._log(`✅ ${invitee.name} 接受复活，获得 1 枚安然令牌，三人进入最终局！各报 1-3`);
+      this._log(`✅ ${invitee.name} 接受复活，获得 1 枚免酒令牌，三人进入最终局！各报 1-3`);
     } else {
       // 拒绝：被邀者 + 两名终局玩家各喝 1 杯（3口）
       const drinks = {};

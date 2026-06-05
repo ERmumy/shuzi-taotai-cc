@@ -1,7 +1,7 @@
 # Render Blueprint deployment config
 services:
   - type: web
-    name: shuzi-taotai
+    name: hanxuan-shuizitaosha
     env: node
     plan: free
     buildCommand: npm install

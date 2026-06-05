@@ -222,11 +222,11 @@ function renderHome() {
 
 // ---------------- 教学卡片 ----------------
 const TUT_CARDS = [
-  { e: '🎯', t: '游戏目标', b: `每轮大家<b>同时</b>报一个数字。<br>报<b>小数</b>抢着「逃生通关」，报<b>大数</b>换「安然令牌🛡️」。<br>笑到最后或喝得最少就是赢家！` },
+  { e: '🎯', t: '游戏目标', b: `每轮大家<b>同时</b>报一个数字。<br>报<b>小数</b>抢着「逃生通关」，报<b>大数</b>换「免酒令牌🛡️」。<br>笑到最后或喝得最少就是赢家！` },
   { e: '🔢', t: '怎么出数', b: `场上有几个人，就报 <b>1 到几</b> 的整数。<br>例如 5 人时，报 1、2、3、4、5 都行。<br>大家锁定后<b>同时亮出</b>。` },
   { e: '💥', t: '撞车作废', b: `如果一个数字被<b>两人或以上</b>报出 → 全部作废！<br>报这些数字的人<b>喝当轮罚酒</b>，但<b>留在场上</b>继续玩。` },
   { e: '🎉', t: '动态放生（通关）', b: `没撞车的数字里，从<b>小到大</b>放生若干人，<b>通关出局</b>不再喝酒。<br>人越多放越多：<span class="tut-mini"><span class="m">17-20人放5</span><span class="m">9-12人放3</span><span class="m">3-6人放1</span></span>` },
-  { e: '🛡️', t: '安然令牌', b: `放生后，留场玩家里报出<b>最大独有数字</b>的人，得 1 枚<b>安然令牌</b>。<br>喝酒前亮出，可<b>抵 1 杯（3口）</b>。这就是报大数的价值！` },
+  { e: '🛡️', t: '免酒令牌', b: `放生后，留场玩家里报出<b>最大独有数字</b>的人，得 1 枚<b>免酒令牌</b>。<br>喝酒前亮出，可<b>抵 1 杯（3口）</b>。这就是报大数的价值！` },
   { e: '🍶', t: '罚酒会涨', b: `撞车罚酒随小轮递增，<b>3 口封顶</b>：<br><span class="tut-mini"><span class="m">第1-2轮 1口</span><span class="m">第3-4轮 2口</span><span class="m">第5轮起 3口</span></span><br>越拖越贵，早逃生更稳！` },
   { e: '🐔', t: '终局 · 斗鸡博弈', b: `剩 2 人时进入终局，各报 <b>1 或 2</b>：<br>· 一人1一人2 → 报 <b>2</b> 的人输喝 2 杯<br>· 都报1 → 撞死，<b>各喝 4 杯</b><br>· 都报2 → 触发<b>复活</b>！` },
   { e: '🔮', t: '复活 & 最终局', b: `双双报 2 时，可<b>邀请一名已通关的人</b>回归。<br>他接受 → 得 1 令牌，三人报 <b>1-3</b> 打最终局，<b>最小独有数字</b>的人逃脱，其余垫底喝 2 杯。` },
@@ -412,7 +412,7 @@ function renderCollect() {
     </div>`;
   }
 
-  const hint = hintBanner(`第 ${state.subRound} 小轮，撞车各喝 <b>${state.basePenalty} 口</b>。想通关就抢小数、又怕和别人撞；报最大独有数字能拿安然令牌🛡️。`);
+  const hint = hintBanner(`第 ${state.subRound} 小轮，撞车各喝 <b>${state.basePenalty} 口</b>。想通关就抢小数、又怕和别人撞；报最大独有数字能拿免酒令牌🛡️。`);
   return `
   <div class="screen">
     ${topbar()}
@@ -459,7 +459,7 @@ function renderReveal() {
   let tokenUI = '';
   if (r.youEligible) {
     tokenUI = `<div class="card tight">
-      <div class="section-title">🛡️ 你有安然令牌，可抵这次 1 杯（3口）</div>
+      <div class="section-title">🛡️ 你有免酒令牌，可抵这次 1 杯（3口）</div>
       <div style="height:10px"></div>
       <div class="row">
         <button class="btn ${r.youUsingToken ? 'btn-purple' : 'btn-ghost'} btn-sm" data-act="toggle-token" data-val="1">${r.youUsingToken ? '✓ 用令牌抵3口' : '用令牌抵3口'}</button>
@@ -487,7 +487,7 @@ function renderReveal() {
 function revealHint(r) {
   switch (r.type) {
     case 'all_collide': return '没有人报出独有数字 → 全员撞车，各喝罚酒后<b>原地重报本小轮</b>（罚酒不涨、不发令牌）。';
-    case 'normal': return '红色=撞车作废喝酒；绿色=最小独有数字<b>通关</b>；紫色皇冠=最大独有数字得<b>安然令牌</b>。';
+    case 'normal': return '红色=撞车作废喝酒；绿色=最小独有数字<b>通关</b>；紫色皇冠=最大独有数字得<b>免酒令牌</b>。';
     case 'endgame_refuse': return '有人拒绝斗鸡，双方<b>共同承担</b>各 2 杯，避免单方坑人。';
     case 'endgame_result': return '终局斗鸡：报 1 抢逃生但怕撞，报 2 避开撞 1 却可能成最大输家。';
     case 'revival_refuse': return '被邀者拒绝复活 → 三人各喝 1 杯柔和收场，不强迫已通关的人回火坑。';
@@ -587,7 +587,7 @@ function renderRevivalDecide() {
   }
   return `<div class="screen">
     ${topbar()}
-    ${hintBanner('被邀请者可自由选择：接受则带着 1 枚安然令牌进最终局；拒绝则三人各喝 1 杯柔和收场。')}
+    ${hintBanner('被邀请者可自由选择：接受则带着 1 枚免酒令牌进最终局；拒绝则三人各喝 1 杯柔和收场。')}
     ${main}
   </div>`;
 }
