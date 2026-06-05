@@ -26,6 +26,26 @@ app.get('/healthz', (req, res) => {
 // roomCode -> Game
 const rooms = new Map();
 
+// 大厅掉线宽限：key=`${roomCode}:${playerId}` -> 定时器。宽限期内重连可保住座位/头像/房主
+const lobbyKickTimers = new Map();
+const LOBBY_GRACE_MS = 60 * 1000;
+function clearLobbyTimer(roomCode, playerId) {
+  const key = roomCode + ':' + playerId;
+  const t = lobbyKickTimers.get(key);
+  if (t) { clearTimeout(t); lobbyKickTimers.delete(key); }
+}
+// 同一玩家可能刚用新页面/新连接重连：判断除当前 socket 外，是否还有该玩家的在线连接
+function hasOtherLiveSocket(roomCode, playerId, exceptId) {
+  const set = io.sockets.adapter.rooms.get(roomCode);
+  if (!set) return false;
+  for (const sid of set) {
+    if (sid === exceptId) continue;
+    const s = io.sockets.sockets.get(sid);
+    if (s && s.data && s.data.playerId === playerId) return true;
+  }
+  return false;
+}
+
 // 生成不易混淆的 4 位房间号
 const CODE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 function genRoomCode() {
@@ -120,6 +140,7 @@ io.on('connection', (socket) => {
     roomCode = (roomCode || '').toUpperCase().trim();
     const game = rooms.get(roomCode);
     if (!game) return cb && cb({ ok: false, msg: '房间不存在' });
+    clearLobbyTimer(roomCode, playerId); // 该玩家重连/加入成功，撤销大厅待移除定时器
     const existing = game.players.get(playerId);
     if (!existing && game.phase !== 'lobby') {
       return cb && cb({ ok: false, msg: '游戏已开始，无法中途加入' });
@@ -170,8 +191,24 @@ io.on('connection', (socket) => {
     if (!roomCode) return;
     const game = rooms.get(roomCode);
     if (!game) return;
+    // 同一玩家已用新连接重连（刷新/多开）：忽略这次旧连接断开，避免把刚回来的人误删
+    if (hasOtherLiveSocket(roomCode, playerId, socket.id)) return;
     game.setConnected(playerId, false);
-    if (game.phase === 'lobby') game.removePlayer(playerId);
+    if (game.phase === 'lobby') {
+      // 大厅：先保留座位，给 LOBBY_GRACE_MS 的重连机会；过期仍未回来才真正移除
+      clearLobbyTimer(roomCode, playerId);
+      const key = roomCode + ':' + playerId;
+      lobbyKickTimers.set(key, setTimeout(() => {
+        lobbyKickTimers.delete(key);
+        const g = rooms.get(roomCode);
+        if (!g) return;
+        const p = g.players.get(playerId);
+        if (g.phase === 'lobby' && p && !p.connected) {
+          g.removePlayer(playerId);
+          broadcast(roomCode);
+        }
+      }, LOBBY_GRACE_MS));
+    }
     // 房间空了就回收
     const allGone = [...game.players.values()].every(p => !p.connected);
     if (game.players.size === 0 || allGone) {

@@ -78,6 +78,9 @@ class Game {
   maybeReassignHost() {
     const host = this.players.get(this.hostId);
     if (host && host.connected) return;
+    // 大厅阶段房主只是掉线（座位还在、可能在重连）时先保留身份，避免刷新一下就丢房主；
+    // 游戏中仍照常迁移，以防卡在掉线房主身上推进不下去。
+    if (host && this.phase === PHASE.LOBBY) return;
     const online = [...this.players.values()].find(p => p.connected);
     if (online) this.hostId = online.id;
   }
@@ -158,8 +161,13 @@ class Game {
   startGame(byId, tutorialMode = false) {
     if (this.phase !== PHASE.LOBBY) return { ok: false, msg: '游戏已开始' };
     if (byId !== this.hostId) return { ok: false, msg: '只有房主能开始' };
+    // 开局前清掉仍未重连的掉线玩家，避免他们占座导致出数阶段一直等不齐
+    for (const [id, p] of [...this.players]) {
+      if (!p.connected) this.players.delete(id);
+    }
+    if (!this.players.has(this.hostId)) this.maybeReassignHost();
     const ps = [...this.players.values()];
-    if (ps.length < 3) return { ok: false, msg: '至少需要 3 人' };
+    if (ps.length < 3) return { ok: false, msg: '至少需要 3 人（在线）' };
     if (ps.length > 20) return { ok: false, msg: '最多 20 人' };
     this.tutorialMode = !!tutorialMode;
     for (const p of ps) {

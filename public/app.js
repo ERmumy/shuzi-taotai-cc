@@ -5,13 +5,14 @@ const socket = io();
 const app = document.getElementById('app');
 
 // 持久身份（刷新/重连仍是同一玩家）
-const PID_KEY = 'sztt_pid', NAME_KEY = 'sztt_name', TUT_KEY = 'sztt_tut_seen';
+const PID_KEY = 'sztt_pid', NAME_KEY = 'sztt_name', TUT_KEY = 'sztt_tut_seen', ROOM_KEY = 'sztt_room';
 let playerId = localStorage.getItem(PID_KEY);
 if (!playerId) { playerId = 'p_' + Math.random().toString(36).slice(2, 10); localStorage.setItem(PID_KEY, playerId); }
 let myName = localStorage.getItem(NAME_KEY) || '';
+let savedRoom = (localStorage.getItem(ROOM_KEY) || '').toUpperCase(); // 关页面/刷新前所在房间，用于自动归位
 
 // 本地界面状态
-let view = 'home';        // home | tutorial | room
+let view = 'home';        // home | tutorial | room | reconnecting
 let inRoom = false;
 let tutIndex = 0;
 let tutReturnTo = 'home'; // 看完教学回到哪
@@ -24,6 +25,11 @@ const roomFromUrl = (new URLSearchParams(location.search).get('room') || '').toU
 
 // 首次游玩 → 自动进入教学
 if (!localStorage.getItem(TUT_KEY)) { view = 'tutorial'; tutReturnTo = 'home'; }
+
+// 关页面前还在某个房间里 → 先进入“重连中”，socket 连上后自动归位
+if (savedRoom && view !== 'tutorial' && (!roomFromUrl || roomFromUrl === savedRoom)) {
+  view = 'reconnecting';
+}
 
 // ---------------- 工具 ----------------
 function h(html) { return html; }
@@ -47,7 +53,33 @@ function fmtSip(k) {
 }
 
 // ---------------- Socket ----------------
-socket.on('connect', () => { if (inRoom && state) socket.emit('join', { roomCode: state.roomCode, name: myName, playerId }, () => {}); });
+function saveRoom(code) { savedRoom = (code || '').toUpperCase(); localStorage.setItem(ROOM_KEY, savedRoom); }
+function clearSavedRoom() { savedRoom = ''; localStorage.removeItem(ROOM_KEY); }
+// 用存档房间号自动重新加入（重开页面/断线后回到原局）
+function attemptRejoin(code) {
+  code = (code || '').toUpperCase().trim();
+  if (!code) return;
+  socket.emit('join', { roomCode: code, name: myName || '玩家', playerId }, (r) => {
+    if (r && r.ok) {
+      inRoom = true;
+      if (view !== 'tutorial') view = 'room';
+      saveRoom(code);
+    } else {
+      clearSavedRoom();
+      if (view === 'reconnecting') { view = 'home'; render(); }
+      if (r && r.msg) toast(r.msg);
+    }
+  });
+}
+socket.on('connect', () => {
+  if (inRoom && state) {
+    // 页内瞬断重连：回到当前房间
+    socket.emit('join', { roomCode: state.roomCode, name: myName, playerId }, () => {});
+  } else if (savedRoom && (!roomFromUrl || roomFromUrl === savedRoom)) {
+    // 整页重开/断线后：用存档房间号自动归位
+    attemptRejoin(savedRoom);
+  }
+});
 socket.on('state', (s) => {
   const prevPhase = state && state.phase;
   state = s; inRoom = true; if (view !== 'tutorial') view = 'room';
@@ -64,7 +96,7 @@ socket.on('state', (s) => {
 // ---------------- 入口动作 ----------------
 function createRoom() {
   if (!ensureName()) return;
-  socket.emit('create', { name: myName, playerId }, (r) => {
+  socket.emit('create', { name: myName, playerId }, (r) => { if (r && r.ok) saveRoom(r.roomCode);
     if (r && r.ok) { inRoom = true; view = 'room'; }
   });
 }
@@ -72,7 +104,7 @@ function joinRoom(code) {
   if (!ensureName()) return;
   code = (code || '').toUpperCase().trim();
   if (code.length < 4) return toast('请输入 4 位房间号');
-  socket.emit('join', { roomCode: code, name: myName, playerId }, (r) => {
+  socket.emit('join', { roomCode: code, name: myName, playerId }, (r) => { if (r && r.ok) saveRoom(r.roomCode || code);
     if (r && r.ok) { inRoom = true; view = 'room'; }
     else toast((r && r.msg) || '加入失败');
   });
@@ -90,6 +122,7 @@ function ensureName() {
 // =================================================================
 function render() {
   if (view === 'tutorial') return app.replaceChildren(elFromHTML(renderTutorial()));
+  if (view === 'reconnecting' && (!inRoom || !state)) return app.replaceChildren(elFromHTML(renderReconnecting()));
   if (!inRoom || !state) return app.replaceChildren(elFromHTML(renderHome()));
   return app.replaceChildren(elFromHTML(renderRoom()));
 }
@@ -128,7 +161,7 @@ function handleAction(act, val) {
     case 'restart': return gameAct('restart');
     case 'copy-url': return copyJoin();
     case 'kick': return gameAct('kick', { targetId: val });
-    case 'leave': inRoom = false; view = 'home'; state = null; location.href = location.pathname; return;
+    case 'leave': clearSavedRoom(); inRoom = false; view = 'home'; state = null; location.href = location.pathname; return;
   }
 }
 function lockNum() {
@@ -137,6 +170,20 @@ function lockNum() {
 }
 
 let startTutOn = true; // 房主默认开启新手教学
+
+// ---------------- 重连中 ----------------
+function renderReconnecting() {
+  return `
+  <div class="screen">
+    <div class="logo"><span class="emoji">🔄</span><h1>正在重连…</h1>
+      <p>回到房间 ${esc(savedRoom)}</p></div>
+    <div class="card center">
+      <div class="waiting">连接服务器中<span class="dots"></span></div>
+      <p class="muted" style="margin-top:10px;font-size:13px">服务器若在休眠，首次可能要等几十秒</p>
+    </div>
+    <button class="btn btn-ghost btn-block" data-act="leave">返回首页</button>
+  </div>`;
+}
 
 // ---------------- 首页 ----------------
 function renderHome() {

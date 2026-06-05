@@ -233,6 +233,49 @@ t('最终局无独有：三人垫底各 6 口', () => {
   three.forEach(id => assert.equal(r.drinks[id], 6));
 });
 
+console.log('掉线 / 重连：');
+t('开局前清掉未重连的掉线玩家', () => {
+  const g = new Game('T');
+  for (let i = 0; i < 4; i++) g.addPlayer('p' + i, '玩家' + i);
+  g.setConnected('p3', false);
+  const r = g.startGame('p0');
+  assert.equal(r.ok, true);
+  assert.equal(g.players.has('p3'), false);
+  assert.equal(g.fieldSize(), 3);
+});
+t('清掉掉线者后不足 3 人则无法开局', () => {
+  const g = new Game('T');
+  for (let i = 0; i < 3; i++) g.addPlayer('p' + i, '玩家' + i);
+  g.setConnected('p1', false);
+  g.setConnected('p2', false);
+  assert.equal(g.startGame('p0').ok, false);
+});
+t('大厅房主掉线先保留身份（等重连）', () => {
+  const g = new Game('T');
+  for (let i = 0; i < 3; i++) g.addPlayer('p' + i, '玩家' + i);
+  g.setConnected('p0', false);
+  g.maybeReassignHost();
+  assert.equal(g.hostId, 'p0');
+});
+t('游戏中房主掉线仍迁移给在线玩家', () => {
+  const g = makeGame(4);
+  g.setConnected('p0', false);
+  g.maybeReassignHost();
+  assert.notEqual(g.hostId, 'p0');
+  assert.equal(g.players.get(g.hostId).connected, true);
+});
+t('重连保留座位/酒数（addPlayer 幂等）', () => {
+  const g = makeGame(4);
+  g.players.get('p1').drinks = 5;
+  g.setConnected('p1', false);
+  const before = g.players.size;
+  g.addPlayer('p1', '玩家1'); // 重连
+  assert.equal(g.players.size, before, '不应新增玩家');
+  assert.equal(g.players.get('p1').connected, true);
+  assert.equal(g.players.get('p1').drinks, 5, '酒数应保留');
+  assert.equal(g.players.get('p1').alive, true, '仍在场');
+});
+
 t('20 人开局可正常跑到终局', () => {
   const g = toEndgame(makeGame(20));
   assert.equal(g.phase, 'endgame_consent');
