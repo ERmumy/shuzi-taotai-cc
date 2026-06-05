@@ -1,0 +1,19 @@
+{
+  "name": "shuzi-taotai",
+  "version": "1.0.0",
+  "description": "数字淘汰 · 卡通版多人在线酒桌博弈游戏（手机扫码即玩）",
+  "main": "server.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node test/game.test.js"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "qrcode": "^1.5.4",
+    "socket.io": "^4.7.5"
+  }
+}

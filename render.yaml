@@ -1,0 +1,10 @@
+# Render 一键部署配置（Blueprint）
+# 也可以在 Render 面板手动新建 Web Service 并填入下面相同的命令。
+services:
+  - type: web
+    name: shuzi-taotai
+    env: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    autoDeploy: true

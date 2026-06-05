@@ -1,0 +1,190 @@
+'use strict';
+/*
+ * server.js —— 房间管理 + 实时同步（Socket.IO）
+ * 同一 WiFi 下：房主创建房间得到房间号/二维码，其余手机扫码或输号加入。
+ */
+const path = require('path');
+const os = require('os');
+const http = require('http');
+const express = require('express');
+const { Server } = require('socket.io');
+const QRCode = require('qrcode');
+const { Game } = require('./game');
+
+const PORT = process.env.PORT || 3000;
+const app = express();
+const server = http.createServer(app);
+const io = new Server(server, { cors: { origin: '*' } });
+
+app.use(express.static(path.join(__dirname, 'public')));
+
+// roomCode -> Game
+const rooms = new Map();
+
+// 生成不易混淆的 4 位房间号
+const CODE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+function genRoomCode() {
+  let code;
+  do {
+    code = Array.from({ length: 4 }, () => CODE_CHARS[Math.floor(Math.random() * CODE_CHARS.length)]).join('');
+  } while (rooms.has(code));
+  return code;
+}
+
+// 取局域网 IPv4（跳过 169.254 无效地址，优先常见私有网段）
+function localIP() {
+  const ifaces = os.networkInterfaces();
+  const candidates = [];
+  for (const name of Object.keys(ifaces)) {
+    for (const ni of ifaces[name]) {
+      if (ni.family === 'IPv4' && !ni.internal && !ni.address.startsWith('169.254.')) {
+        candidates.push(ni.address);
+      }
+    }
+  }
+  const preferred = candidates.find(a =>
+    a.startsWith('192.168.') || a.startsWith('10.') || /^172\.(1[6-9]|2\d|3[01])\./.test(a));
+  return preferred || candidates[0] || 'localhost';
+}
+const LAN_IP = localIP();
+// 实际端口在 listen 成功后确定（端口被占用会自动顺延），JOIN_BASE 随之更新
+let JOIN_BASE = `http://${LAN_IP}:${PORT}`;
+
+// 给房间内每个 socket 推送各自裁剪后的状态
+function broadcast(roomCode) {
+  const game = rooms.get(roomCode);
+  if (!game) return;
+  game.maybeReassignHost();
+  for (const [, sock] of io.sockets.adapter.rooms.get(roomCode)
+    ? [...io.sockets.adapter.rooms.get(roomCode)].map(sid => [sid, io.sockets.sockets.get(sid)])
+    : []) {
+    if (!sock) continue;
+    const pid = sock.data.playerId;
+    sock.emit('state', game.publicState(pid));
+  }
+}
+
+// 提供加入二维码（dataURL）
+app.get('/qr/:code', async (req, res) => {
+  const url = `${JOIN_BASE}/?room=${encodeURIComponent(req.params.code)}`;
+  try {
+    const dataUrl = await QRCode.toDataURL(url, { margin: 1, width: 320,
+      color: { dark: '#2b2b40', light: '#ffffff' } });
+    res.json({ url, dataUrl });
+  } catch (e) {
+    res.status(500).json({ error: String(e) });
+  }
+});
+
+io.on('connection', (socket) => {
+  // 创建房间
+  socket.on('create', ({ name, playerId }, cb) => {
+    const roomCode = genRoomCode();
+    const game = new Game(roomCode);
+    rooms.set(roomCode, game);
+    game.addPlayer(playerId, name);
+    socket.data = { roomCode, playerId };
+    socket.join(roomCode);
+    cb && cb({ ok: true, roomCode, joinUrl: `${JOIN_BASE}/?room=${roomCode}` });
+    broadcast(roomCode);
+  });
+
+  // 加入房间
+  socket.on('join', ({ roomCode, name, playerId }, cb) => {
+    roomCode = (roomCode || '').toUpperCase().trim();
+    const game = rooms.get(roomCode);
+    if (!game) return cb && cb({ ok: false, msg: '房间不存在' });
+    const existing = game.players.get(playerId);
+    if (!existing && game.phase !== 'lobby') {
+      return cb && cb({ ok: false, msg: '游戏已开始，无法中途加入' });
+    }
+    if (!existing && game.players.size >= 20) {
+      return cb && cb({ ok: false, msg: '房间已满（20人）' });
+    }
+    game.addPlayer(playerId, name);
+    socket.data = { roomCode, playerId };
+    socket.join(roomCode);
+    cb && cb({ ok: true, roomCode, joinUrl: `${JOIN_BASE}/?room=${roomCode}` });
+    broadcast(roomCode);
+  });
+
+  // 统一的游戏动作通道
+  socket.on('game', ({ action, payload }, cb) => {
+    const { roomCode, playerId } = socket.data || {};
+    const game = rooms.get(roomCode);
+    if (!game) return cb && cb({ ok: false, msg: '房间不存在' });
+    game.maybeReassignHost();
+    let res = { ok: true };
+    switch (action) {
+      case 'start':        res = game.startGame(playerId, payload && payload.tutorial); break;
+      case 'pick':         res = game.submitPick(playerId, payload.value); break;
+      case 'consent':      res = game.submitConsent(playerId, payload.choice); break;
+      case 'endgamePick':  res = game.submitEndgamePick(playerId, payload.value); break;
+      case 'revivalPick':  res = game.submitRevivalPick(playerId, payload.targetId); break;
+      case 'revivalDecide':res = game.submitRevivalDecision(playerId, payload.choice); break;
+      case 'finalPick':    res = game.submitFinalPick(playerId, payload.value); break;
+      case 'toggleToken':  res = game.toggleToken(playerId, payload.use); break;
+      case 'proceed':      res = game.proceed(playerId); break;
+      case 'restart':      res = game.restart(playerId); break;
+      case 'rename':
+        { const p = game.players.get(playerId); if (p && payload.name) p.name = String(payload.name).slice(0, 8); }
+        break;
+      case 'kick':
+        if (playerId === game.hostId && game.phase === 'lobby') game.removePlayer(payload.targetId);
+        break;
+      default: res = { ok: false, msg: '未知操作' };
+    }
+    cb && cb(res);
+    broadcast(roomCode);
+  });
+
+  socket.on('disconnect', () => {
+    const { roomCode, playerId } = socket.data || {};
+    if (!roomCode) return;
+    const game = rooms.get(roomCode);
+    if (!game) return;
+    game.setConnected(playerId, false);
+    if (game.phase === 'lobby') game.removePlayer(playerId);
+    // 房间空了就回收
+    const allGone = [...game.players.values()].every(p => !p.connected);
+    if (game.players.size === 0 || allGone) {
+      setTimeout(() => {
+        const g = rooms.get(roomCode);
+        if (g && [...g.players.values()].every(p => !p.connected)) rooms.delete(roomCode);
+      }, 1000 * 60 * 10); // 10 分钟无人则回收
+    }
+    broadcast(roomCode);
+  });
+});
+
+// 启动监听；端口被占用时自动顺延到下一个端口
+function startListen(port, attemptsLeft) {
+  const onError = (err) => {
+    server.removeListener('listening', onListening);
+    if (err.code === 'EADDRINUSE' && attemptsLeft > 0) {
+      console.log(`  端口 ${port} 被占用，尝试 ${port + 1} ...`);
+      setTimeout(() => startListen(port + 1, attemptsLeft - 1), 150);
+    } else {
+      console.error('启动失败：', err.message);
+      process.exit(1);
+    }
+  };
+  const onListening = async () => {
+    server.removeListener('error', onError);
+    JOIN_BASE = `http://${LAN_IP}:${port}`;
+    let qrText = '';
+    try { qrText = await QRCode.toString(`${JOIN_BASE}`, { type: 'terminal', small: true }); } catch {}
+    console.log('\n========================================');
+    console.log('  🍻 数字淘汰 · 卡通版 已启动');
+    console.log('========================================');
+    console.log(`  本机访问：  http://localhost:${port}`);
+    console.log(`  同一WiFi下手机访问： ${JOIN_BASE}`);
+    console.log('  （房主在手机/电脑打开上面网址 → 创建房间 → 其他人扫码加入）');
+    if (qrText) { console.log('\n  手机扫码直接打开：\n'); console.log(qrText); }
+    console.log('========================================\n');
+  };
+  server.once('error', onError);
+  server.once('listening', onListening);
+  server.listen(port, '0.0.0.0');
+}
+startListen(PORT, 10);
