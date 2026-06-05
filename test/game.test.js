@@ -276,6 +276,44 @@ t('重连保留座位/酒数（addPlayer 幂等）', () => {
   assert.equal(g.players.get('p1').alive, true, '仍在场');
 });
 
+console.log('房主移除掉线玩家：');
+t('非房主不能移除', () => {
+  const g = makeGame(4);
+  g.setConnected('p3', false);
+  assert.equal(g.removeOffline('p1', 'p3').ok, false);
+  assert.equal(g.players.has('p3'), true);
+});
+t('不能移除在线玩家', () => {
+  const g = makeGame(4);
+  assert.equal(g.removeOffline('p0', 'p1').ok, false);
+});
+t('移除卡轮的掉线者→本轮立即开牌', () => {
+  const g = makeGame(4);
+  g.submitPick('p0', 1); g.submitPick('p1', 2); g.submitPick('p2', 3);
+  g.setConnected('p3', false); // p3 没出且掉线，卡住本轮
+  assert.equal(g.phase, 'collect');
+  assert.equal(g.removeOffline('p0', 'p3').ok, true);
+  assert.equal(g.players.has('p3'), false);
+  assert.equal(g.phase, 'reveal'); // 剩 3 人都出了 → 结算
+});
+t('移除后只剩 2 人→进入终局', () => {
+  const g = makeGame(3);
+  g.submitPick('p0', 1); g.submitPick('p1', 2);
+  g.setConnected('p2', false);
+  g.removeOffline('p0', 'p2');
+  assert.equal(g.phase, 'endgame_consent');
+  assert.equal(g.fieldSize(), 2);
+});
+t('移除到只剩 1 人→直接结束，剩者通关', () => {
+  const g = makeGame(3);
+  g.setConnected('p1', false);
+  g.setConnected('p2', false);
+  g.removeOffline('p0', 'p1');
+  g.removeOffline('p0', 'p2');
+  assert.equal(g.phase, 'gameover');
+  assert.equal(g.players.get('p0').escaped, true);
+});
+
 t('20 人开局可正常跑到终局', () => {
   const g = toEndgame(makeGame(20));
   assert.equal(g.phase, 'endgame_consent');

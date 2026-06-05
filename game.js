@@ -145,6 +145,64 @@ class Game {
     }
   }
 
+  // 房主移除“已掉线、且游戏正等待其行动”的玩家，避免一人离席卡住整轮
+  removeOffline(byId, targetId) {
+    if (byId !== this.hostId) return { ok: false, msg: '只有房主能移除玩家' };
+    const p = this.players.get(targetId);
+    if (!p) return { ok: false, msg: '玩家不存在' };
+    if (p.connected) return { ok: false, msg: '只能移除已掉线的玩家' };
+    if (this.phase === PHASE.LOBBY) { this.removePlayer(targetId); return { ok: true }; }
+    const WAITING = [PHASE.COLLECT, PHASE.ENDGAME_CONSENT, PHASE.ENDGAME_COLLECT,
+      PHASE.FINAL_COLLECT, PHASE.REVIVAL_SELECT, PHASE.REVIVAL_DECIDE];
+    if (!WAITING.includes(this.phase)) return { ok: false, msg: '当前阶段无需移除' };
+    if (!(p.alive || targetId === this.invitedId)) return { ok: false, msg: '该玩家不影响进行' };
+    const name = p.name;
+    this.players.delete(targetId);
+    if (this.revivalProposals) delete this.revivalProposals[targetId];
+    this._log(`🚪 ${name} 掉线未归，被房主移出本局`);
+    this.maybeReassignHost();
+    this._recoverAfterRemoval(targetId);
+    return { ok: true };
+  }
+
+  // 移除掉线玩家后，按当前阶段重新评估，避免卡在等待已离开的人
+  _recoverAfterRemoval(removedId) {
+    if (this.phase === PHASE.REVIVAL_DECIDE && removedId === this.invitedId) {
+      this._abortRevivalToGameOver();
+      return;
+    }
+    const alive = this.alivePlayers();
+    if (alive.length <= 1) { this._toGameOver(true); return; } // 只剩 1 人 → 剩者通关收场
+    if (this.phase === PHASE.COLLECT) {
+      if (alive.length === 2) { // 缩到 2 人 → 进终局
+        for (const p of alive) { p.pick = null; p.consent = null; }
+        this.phase = PHASE.ENDGAME_CONSENT;
+        this._log('🐔 只剩 2 人，进入终局斗鸡博弈，双方先表态是否开战');
+        return;
+      }
+      if (alive.every(p => p.pick != null)) this._resolveNormal(); // 其余人都出完 → 立即开牌
+      return;
+    }
+    if (this.phase === PHASE.FINAL_COLLECT) {
+      if (alive.every(p => p.pick != null)) this._resolveFinal(alive);
+      return;
+    }
+    // endgame_consent / endgame_collect / revival_select：移除后若仍≥2人，继续等待剩余玩家即可
+  }
+
+  // 复活待决定时被邀者掉线被移除：复活作废，终局双方各喝 2 杯收场并结束
+  _abortRevivalToGameOver() {
+    for (const p of this.alivePlayers()) {
+      p.drinks += 2 * SIP_PER_CUP;
+      p.alive = false;
+      if (p.finishRank == null) p.finishRank = this._nextRank();
+    }
+    this.invitedId = null;
+    this.revivalProposals = {};
+    this._log('🚪 被邀者掉线，复活作废，终局双方各喝 2 杯收场');
+    this.phase = PHASE.GAMEOVER;
+  }
+
   alivePlayers() {
     return [...this.players.values()].filter(p => p.alive);
   }

@@ -174,6 +174,7 @@ io.on('connection', (socket) => {
       case 'toggleToken':  res = game.toggleToken(playerId, payload.use); break;
       case 'proceed':      res = game.proceed(playerId); break;
       case 'restart':      res = game.restart(playerId); break;
+      case 'removeOffline':res = game.removeOffline(playerId, payload.targetId); break;
       case 'rename':
         { const p = game.players.get(playerId); if (p && payload.name) p.name = String(payload.name).slice(0, 8); }
         break;

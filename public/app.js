@@ -161,6 +161,7 @@ function handleAction(act, val) {
     case 'restart': return gameAct('restart');
     case 'copy-url': return copyJoin();
     case 'kick': return gameAct('kick', { targetId: val });
+    case 'remove-offline': return gameAct('removeOffline', { targetId: val });
     case 'leave': clearSavedRoom(); inRoom = false; view = 'home'; state = null; location.href = location.pathname; return;
   }
 }
@@ -283,6 +284,19 @@ function topbar() {
       <span class="pill tk">🛡️ ${you.tokens || 0}</span>
       <span class="pill">🍶 ${you.drinks || 0}口</span>
     </div>
+  </div>` + offlineHostControls();
+}
+// 房主专用：有人掉线没回来、正卡着本轮时，显示「移除」按钮
+function offlineHostControls() {
+  if (!state || !state.youAreHost) return '';
+  const WAITING = ['collect', 'endgame_consent', 'endgame_collect', 'final_collect', 'revival_select', 'revival_decide'];
+  if (!WAITING.includes(state.phase)) return '';
+  const targets = state.players.filter(p => !p.connected && (p.alive || p.id === state.invitedId));
+  if (!targets.length) return '';
+  return `<div class="card tight" style="border:2px dashed var(--coral)">
+    <div class="section-title" style="color:var(--coral-d)">⚠️ 有人掉线没回来</div>
+    <p class="muted" style="margin:6px 0 10px;font-size:13px">游戏在等他出数/表态。移除后本轮不再等他，直接继续。</p>
+    ${targets.map(p => `<button class="btn btn-ghost btn-sm btn-block" data-act="remove-offline" data-val="${p.id}">🚪 移除掉线的 ${esc(p.name)}</button>`).join('')}
   </div>`;
 }
 function playerChips() {
