@@ -1,5 +1,4 @@
-# Render 一键部署配置（Blueprint）
-# 也可以在 Render 面板手动新建 Web Service 并填入下面相同的命令。
+# Render Blueprint deployment config
 services:
   - type: web
     name: shuzi-taotai
@@ -7,4 +6,5 @@ services:
     plan: free
     buildCommand: npm install
     startCommand: npm start
+    healthCheckPath: /healthz
     autoDeploy: true

@@ -16,7 +16,12 @@ const app = express();
 const server = http.createServer(app);
 const io = new Server(server, { cors: { origin: '*' } });
 
+app.set('trust proxy', true);
 app.use(express.static(path.join(__dirname, 'public')));
+
+app.get('/healthz', (req, res) => {
+  res.status(200).json({ ok: true });
+});
 
 // roomCode -> Game
 const rooms = new Map();
@@ -50,14 +55,21 @@ const LAN_IP = localIP();
 // 实际端口在 listen 成功后确定（端口被占用会自动顺延），JOIN_BASE 随之更新
 let JOIN_BASE = `http://${LAN_IP}:${PORT}`;
 
+function cleanBaseUrl(url) {
+  return String(url || '').trim().replace(/\/+$/, '');
+}
+
 // 生产环境优先用 BASE_URL 环境变量（如 Render 部署时设置），
 // 其次用请求的 host 头（支持代理/CDN），回退到 LAN IP
 function getJoinBase(req) {
-  if (process.env.BASE_URL) return process.env.BASE_URL;
+  if (process.env.BASE_URL) return cleanBaseUrl(process.env.BASE_URL);
   if (req) {
-    const proto = req.headers['x-forwarded-proto'] || req.protocol || 'http';
-    const host = req.headers['x-forwarded-host'] || req.headers.host || `localhost:${PORT}`;
-    return `${proto}://${host}`;
+    const headers = req.headers || (req.handshake && req.handshake.headers) || {};
+    const protoHeader = headers['x-forwarded-proto'] || req.protocol || 'http';
+    const hostHeader = headers['x-forwarded-host'] || headers.host || `localhost:${PORT}`;
+    const proto = String(Array.isArray(protoHeader) ? protoHeader[0] : protoHeader).split(',')[0].trim();
+    const host = String(Array.isArray(hostHeader) ? hostHeader[0] : hostHeader).split(',')[0].trim();
+    return cleanBaseUrl(`${proto || 'http'}://${host}`);
   }
   return JOIN_BASE;
 }
@@ -98,7 +110,7 @@ io.on('connection', (socket) => {
     game.addPlayer(playerId, name);
     socket.data = { roomCode, playerId };
     socket.join(roomCode);
-    const joinUrl = `${getJoinBase()}/?room=${roomCode}`;
+    const joinUrl = `${getJoinBase(socket)}/?room=${roomCode}`;
     cb && cb({ ok: true, roomCode, joinUrl });
     broadcast(roomCode);
   });
@@ -118,7 +130,7 @@ io.on('connection', (socket) => {
     game.addPlayer(playerId, name);
     socket.data = { roomCode, playerId };
     socket.join(roomCode);
-    const joinUrl = `${getJoinBase()}/?room=${roomCode}`;
+    const joinUrl = `${getJoinBase(socket)}/?room=${roomCode}`;
     cb && cb({ ok: true, roomCode, joinUrl });
     broadcast(roomCode);
   });
