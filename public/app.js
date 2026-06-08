@@ -19,6 +19,7 @@ let tutReturnTo = 'home'; // 看完教学回到哪
 let state = null;         // 服务端最新对局状态
 let selNum = null;        // 出数前的本地选择
 let lastPhaseKey = '';    // 用于切换轮次时重置本地选择
+let autoDeadline = null; // 当前阶段自动推进/随机的本地截止时刻（用服务端相对剩余时间换算，避免时钟偏差）
 
 // 从二维码链接进入
 const roomFromUrl = (new URLSearchParams(location.search).get('room') || '').toUpperCase();
@@ -83,6 +84,10 @@ socket.on('connect', () => {
 socket.on('state', (s) => {
   const prevPhase = state && state.phase;
   state = s; inRoom = true; if (view !== 'tutorial') view = 'room';
+  // 把服务端的「剩余毫秒」换算成本地截止时刻，倒计时只读本地时钟
+  const remMs = s.phase === 'reveal' ? s.revealRemainingMs
+    : s.phase === 'revival_select' ? s.revivalRemainingMs : null;
+  autoDeadline = (remMs != null) ? Date.now() + remMs : null;
   // 进入新的出数轮或亮数时给点反馈
   const key = s.phase + ':' + s.subRound + ':' + (s.reveal ? s.reveal.note : '');
   if (key !== lastPhaseKey) {
@@ -120,7 +125,28 @@ function ensureName() {
 // =================================================================
 //  渲染
 // =================================================================
+// 阶段倒计时：本地每 250ms 刷新数字，不整页重渲染（避免打断按钮点击）
+let _autoTick = null;
+const AUTO_PHASES = ['reveal', 'revival_select'];
+function autoSecsLeft() {
+  if (!autoDeadline) return 0;
+  return Math.max(0, Math.ceil((autoDeadline - Date.now()) / 1000));
+}
+function manageAutoCountdown() {
+  const active = inRoom && state && AUTO_PHASES.includes(state.phase) && autoDeadline;
+  if (active && !_autoTick) {
+    _autoTick = setInterval(() => {
+      if (!state || !AUTO_PHASES.includes(state.phase)) { clearInterval(_autoTick); _autoTick = null; return; }
+      const el = document.getElementById('autoCountdown');
+      if (el) el.textContent = autoSecsLeft();
+    }, 250);
+  } else if (!active && _autoTick) {
+    clearInterval(_autoTick); _autoTick = null;
+  }
+}
+
 function render() {
+  manageAutoCountdown();
   if (view === 'tutorial') return app.replaceChildren(elFromHTML(renderTutorial()));
   if (view === 'reconnecting' && (!inRoom || !state)) return app.replaceChildren(elFromHTML(renderReconnecting()));
   if (!inRoom || !state) return app.replaceChildren(elFromHTML(renderHome()));
@@ -153,6 +179,7 @@ function handleAction(act, val) {
     case 'endgame': selNum = Number(val); return render();
     case 'lock-endgame': if (selNum) gameAct('endgamePick', { value: selNum }); selNum = null; return;
     case 'revival-pick': return gameAct('revivalPick', { targetId: val });
+    case 'revival-random': return gameAct('revivalRandom');
     case 'revival-decide': return gameAct('revivalDecide', { choice: val });
     case 'final': selNum = Number(val); return render();
     case 'lock-final': if (selNum) gameAct('finalPick', { value: selNum }); selNum = null; return;
@@ -227,10 +254,10 @@ const TUT_CARDS = [
   { e: '🔢', t: '怎么出数', b: `场上有几个人，就报 <b>1 到几</b> 的整数。<br>例如 5 人时，报 1、2、3、4、5 都行。<br>大家锁定后<b>同时亮出</b>。` },
   { e: '💥', t: '撞车作废', b: `如果一个数字被<b>两人或以上</b>报出 → 全部作废！<br>报这些数字的人<b>喝当轮罚酒</b>，但<b>留在场上</b>继续玩。` },
   { e: '🎉', t: '动态放生（通关）', b: `没撞车的数字里，从<b>小到大</b>放生若干人，<b>通关出局</b>不再喝酒。<br>人越多放越多：<span class="tut-mini"><span class="m">17-20人放5</span><span class="m">9-12人放3</span><span class="m">3-6人放1</span></span>` },
-  { e: '🛡️', t: '免酒令牌', b: `放生后，留场玩家里报出<b>最大独有数字</b>的人，得 1 枚<b>免酒令牌</b>。<br>喝酒前亮出，可<b>抵 1 杯（3口）</b>。这就是报大数的价值！` },
+  { e: '🛡️', t: '免酒令牌', b: `放生后，留场玩家里报出<b>最大独有数字</b>的人，得 1 枚<b>免酒令牌</b>。<br>喝酒前亮出，可<b>抵 1 杯（3口）</b>。<br><span class="tut-mini"><span class="m">每次结算限用1枚</span><span class="m">本局结束清零</span></span>` },
   { e: '🍶', t: '罚酒会涨', b: `撞车罚酒随小轮递增，<b>3 口封顶</b>：<br><span class="tut-mini"><span class="m">第1-2轮 1口</span><span class="m">第3-4轮 2口</span><span class="m">第5轮起 3口</span></span><br>越拖越贵，早逃生更稳！` },
   { e: '🐔', t: '终局 · 斗鸡博弈', b: `剩 2 人时进入终局，各报 <b>1 或 2</b>：<br>· 一人1一人2 → 报 <b>2</b> 的人输喝 2 杯<br>· 都报1 → 撞死，<b>各喝 4 杯</b><br>· 都报2 → 触发<b>复活</b>！` },
-  { e: '🔮', t: '复活 & 最终局', b: `双双报 2 时，可<b>邀请一名已通关的人</b>回归。<br>他接受 → 得 1 令牌，三人报 <b>1-3</b> 打最终局，<b>最小独有数字</b>的人逃脱，其余垫底喝 2 杯。` },
+  { e: '🔮', t: '复活 & 最终局', b: `双双报 2 时，两位决战者各指定一名已通关的人或点 <b>🎲随机</b>（同一人 / 一方随机一方指定即生效；都随机或超时则系统随机）。<br>被邀者接受 → 得 1 枚<b>永久免酒令牌</b>（永不清零，跨局保留），三人报 <b>1-3</b> 打最终局，<b>最小独有数字</b>的人逃脱，其余垫底喝 2 杯。` },
   { e: '🍻', t: '准备开玩！', b: `记住口诀：<br><b>小数抢逃生，大数换免死</b>。<br>祝你滴酒不沾，把朋友们都灌倒～` },
 ];
 function renderTutorial() {
@@ -281,7 +308,7 @@ function topbar() {
   <div class="topbar">
     <div><div class="room">房间 ${state.roomCode}</div></div>
     <div class="stats">
-      <span class="pill tk">🛡️ ${you.tokens || 0}</span>
+      <span class="pill tk">🛡️ ${you.tokens || 0}${you.permaTokens ? ` <span style="font-size:10px;opacity:.85">永久${you.permaTokens}</span>` : ''}</span>
       <span class="pill">🍶 ${you.drinks || 0}口</span>
     </div>
   </div>` + offlineHostControls();
@@ -438,6 +465,67 @@ function renderCollect() {
   </div>`;
 }
 
+// 某人本轮最终要喝的口数（计入其当前令牌选择，实时反映）
+function finalDrinkFor(r, pid) {
+  let d = r.drinks[pid] || 0;
+  if (d > 0 && r.eligibleTokenIds.includes(pid) && r.tokenUse[pid]) d = Math.max(0, d - 3);
+  return d;
+}
+// 亮数后给「我」的行动卡：要喝的人→请喝酒；不喝的人→监督别人喝
+function drinkCallout(r) {
+  const base = r.drinks[playerId] || 0; // 本轮判定我要喝的口数（未计令牌）
+  if (base > 0) {
+    const myFinal = finalDrinkFor(r, playerId);
+    const using = r.youEligible && r.youUsingToken;
+    // 令牌选择：仅在「我需喝酒且持有令牌」时出现，点击即实时改变上面的口数
+    const py = state.you || {};
+    const permaNote = py.permaTokens ? `（含永久 ${py.permaTokens} 枚${py.tokens > py.permaTokens ? '，优先用普通券' : ''}）` : '';
+    const tokenChoice = r.youEligible ? `
+      <div style="margin-top:14px;padding-top:12px;border-top:1px dashed #d9c7d9">
+        <p class="muted" style="margin:0 0 8px;font-size:14px">🛡️ 你有 ${py.tokens || 0} 枚免酒令牌${permaNote}，本次可抵 1 杯（3口）</p>
+        <div class="row">
+          <button class="btn ${using ? 'btn-purple' : 'btn-ghost'} btn-sm" data-act="toggle-token" data-val="1">${using ? '✓ 已用令牌抵3口' : '用令牌抵3口'}</button>
+          <button class="btn btn-ghost btn-sm" data-act="toggle-token" data-val="0" ${!using ? 'style="opacity:.6"' : ''}>留着不用</button>
+        </div>
+      </div>` : '';
+    if (myFinal === 0) { // 用令牌把这杯全抵掉
+      return `<div class="card center" style="border:3px solid var(--purple);background:#faf7ff">
+        <div class="tut-emoji" style="font-size:56px">🛡️</div>
+        <div class="section-title center" style="justify-content:center;color:var(--purple);font-size:22px">令牌免酒，这杯不用喝！</div>
+        <p class="muted" style="font-size:15px">已用 1 枚免酒令牌抵掉本轮罚酒</p>
+        ${tokenChoice}
+      </div>`;
+    }
+    return `<div class="card center" style="border:3px solid var(--coral);background:#fff3f3">
+      <div class="tut-emoji" style="font-size:56px">🍺</div>
+      <div class="section-title center" style="justify-content:center;color:var(--coral-d);font-size:24px">轮到你喝酒啦！</div>
+      <div class="big-num" style="color:var(--coral)">${myFinal}<span style="font-size:22px"> 口</span></div>
+      <p class="muted" style="font-size:15px">请喝 <b>${fmtSip(myFinal)}</b>${using ? '（已抵3口）' : ''}，干了干了～</p>
+      ${tokenChoice}
+    </div>`;
+  }
+  const drinkers = state.players
+    .map(p => ({ p, d: finalDrinkFor(r, p.id) }))
+    .filter(x => x.d > 0)
+    .sort((a, b) => b.d - a.d);
+  if (!drinkers.length) {
+    return `<div class="card center" style="border:2px solid var(--green,#3ec97a)">
+      <div class="tut-emoji" style="font-size:50px">😎</div>
+      <div class="section-title center" style="justify-content:center">本轮没人喝酒</div>
+      <p class="muted">大家都很猛，继续～</p></div>`;
+  }
+  const list = drinkers.map(x => `<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:8px 12px;margin:6px 0;background:#f3eeff;border-radius:12px">
+      <span style="display:flex;align-items:center;gap:8px;font-weight:800"><span style="font-size:22px">${x.p.avatar}</span>${esc(x.p.name)}</span>
+      <span style="color:var(--coral-d);font-weight:900">🍶 ${fmtSip(x.d)}</span>
+    </div>`).join('');
+  return `<div class="card center" style="border:3px solid var(--purple);background:#faf7ff">
+    <div class="tut-emoji" style="font-size:50px">👀</div>
+    <div class="section-title center" style="justify-content:center;color:var(--purple);font-size:22px">监督他们喝酒！</div>
+    <p class="muted" style="margin:2px 0 10px">盯紧下面这些人，喝够数量才算数：</p>
+    <div style="text-align:left">${list}</div>
+  </div>`;
+}
+
 // ---------------- 亮数 / 结算 ----------------
 function renderReveal() {
   const r = state.reveal;
@@ -469,31 +557,19 @@ function renderReveal() {
     </div>`;
   }).join('');
 
-  // 令牌使用
-  let tokenUI = '';
-  if (r.youEligible) {
-    tokenUI = `<div class="card tight">
-      <div class="section-title">🛡️ 你有免酒令牌，可抵这次 1 杯（3口）</div>
-      <div style="height:10px"></div>
-      <div class="row">
-        <button class="btn ${r.youUsingToken ? 'btn-purple' : 'btn-ghost'} btn-sm" data-act="toggle-token" data-val="1">${r.youUsingToken ? '✓ 用令牌抵3口' : '用令牌抵3口'}</button>
-        <button class="btn ${!r.youUsingToken ? 'btn-ghost' : 'btn-ghost'} btn-sm" data-act="toggle-token" data-val="0" ${!r.youUsingToken ? 'style="opacity:.6"' : ''}>留着不用</button>
-      </div>
-    </div>`;
-  }
-
+  const secs = autoSecsLeft();
   const proceed = state.youAreHost
-    ? `<button class="btn btn-primary btn-block" data-act="proceed">${r.terminal ? '查看结算 🏁' : '继续下一轮 ▶'}</button>`
-    : `<div class="waiting">等房主点「继续」<span class="dots"></span></div>`;
+    ? `<button class="btn btn-primary btn-block" data-act="proceed">${r.terminal ? '查看结算 🏁' : '立即继续 ▶'}　<span class="muted">(<span id="autoCountdown">${secs}</span>s 后自动)</span></button>`
+    : `<div class="waiting"><span id="autoCountdown">${secs}</span> 秒后自动${r.terminal ? '结算' : '进下一轮'}<span class="dots"></span></div>`;
 
   const hint = hintBanner(revealHint(r));
   return `
   <div class="screen">
     ${topbar()}
     <div class="note-bar">${esc(r.note)}</div>
+    ${drinkCallout(r)}
     ${hint}
     <div class="card"><div class="reveal-grid">${cells}</div></div>
-    ${tokenUI}
     ${proceed}
     ${logFeed()}
   </div>`;
@@ -563,23 +639,50 @@ function renderEndgameCollect() {
 function renderRevivalSelect() {
   const you = state.you, mine = you && you.alive;
   const escaped = state.players.filter(p => p.escaped);
+  const two = state.players.filter(p => p.alive); // 两位决战者
+  const choices = state.revivalChoices || {};
+  const secs = autoSecsLeft();
+  const nameOf = (id) => esc((state.players.find(p => p.id === id) || {}).name || '');
+
+  // 某个选项（'random' 或 已通关玩家 id）被哪些决战者选中 → 渲染小标记
+  const markFor = (val) => two.filter(d => choices[d.id] === val)
+    .map(d => `<span class="tag ${d.id === playerId ? 'me' : 'host'}">${d.id === playerId ? '你' : nameOf(d.id)}</span>`).join('');
+
+  const cd = `<div class="center" style="font-weight:900;margin:4px 0;color:var(--purple)">⏳ <span id="autoCountdown">${secs}</span> 秒后自动随机复活</div>`;
+
+  // 双方选择概览（给围观/候选者看）
+  const overview = `<div class="card tight"><div class="section-title">双方选择</div>
+    ${two.map(d => {
+      const c = choices[d.id];
+      const txt = c === 'random' ? '🎲 随机' : (c ? nameOf(c) : '<span class="muted">未选</span>');
+      return `<div style="display:flex;justify-content:space-between;padding:5px 2px"><span>${nameOf(d.id)}${d.id === playerId ? '（你）' : ''}</span><b>${txt}</b></div>`;
+    }).join('')}
+  </div>`;
+
   let main;
-  if (!mine) {
-    main = `<div class="card center"><div class="tut-emoji">🔮</div><p>两位决战者正在<b>协商</b>邀请谁回归…</p>
-      ${you && you.escaped ? '<p class="muted">你已通关，可能被邀请回来打最终局</p>' : ''}</div>`;
-  } else {
+  if (mine) {
+    const myChoice = choices[playerId];
     main = `<div class="card">
       <div class="section-title">🔮 邀请一名已通关玩家回归</div>
-      <p class="muted" style="margin:6px 0">两位决战者需<b>选同一个人</b>才生效</p>
+      <p class="muted" style="margin:6px 0">选同一人 / 一方随机一方指定 → 立即生效；都随机 → 直接随机。<b>可随时改选</b>，超时未达成则自动随机。</p>
       <div class="players">` +
-      escaped.map(p => `<button class="chip" data-act="revival-pick" data-val="${p.id}" style="cursor:pointer">
-        <span class="av">${p.avatar}</span><span class="nm">${esc(p.name)}</span></button>`).join('') +
-      `</div></div>`;
+      escaped.map(p => `<button class="chip" data-act="revival-pick" data-val="${p.id}" style="cursor:pointer;${myChoice === p.id ? 'border:2px solid var(--purple);background:#faf7ff' : ''}">
+        <span class="av">${p.avatar}</span><span class="nm">${esc(p.name)}</span>${markFor(p.id)}</button>`).join('') +
+      `</div>
+      <div style="height:12px"></div>
+      <button class="btn ${myChoice === 'random' ? 'btn-purple' : 'btn-ghost'} btn-block" data-act="revival-random">🎲 随机复活一人 ${markFor('random')}</button>
+    </div>`;
+  } else {
+    main = `<div class="card center"><div class="tut-emoji">🔮</div><p>两位决战者正在<b>选择</b>邀请谁回归…</p>
+      ${you && you.escaped ? '<p class="muted">你已通关，可能被邀请回来打最终局</p>' : ''}</div>`;
   }
+
   return `<div class="screen">
     ${topbar()}
-    ${hintBanner('双双报 2 触发复活。两位决战者<b>共同指定</b>一名已通关玩家邀请回归，需协商一致。')}
+    ${hintBanner('双双报 2 触发复活。可指定同一人或点随机：一方随机另一方指定则按指定的来；都随机或 10 秒超时则系统随机。')}
+    ${cd}
     ${main}
+    ${mine ? '' : overview}
   </div>`;
 }
 
@@ -643,7 +746,7 @@ function renderGameover() {
     const medal = i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : `${i + 1}`;
     const sub = [];
     if (p.escaped) sub.push('🎉通关');
-    if (p.tokens) sub.push(`🛡️余${p.tokens}`);
+    if (p.tokens) sub.push(`🛡️余${p.tokens}${p.permaTokens ? `(永久${p.permaTokens})` : ''}`);
     sub.push(`🍶 ${fmtSip(p.drinks)}`);
     return `<div class="${cls.join(' ')}">
       <div class="pos">${medal}</div>

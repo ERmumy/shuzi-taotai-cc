@@ -94,6 +94,65 @@ function getJoinBase(req) {
   return JOIN_BASE;
 }
 
+// 亮数阶段自动推进：到点替房主点「继续」，无需房主手动操作
+const REVEAL_AUTO_MS = 8 * 1000;        // 普通结算：看一眼就走
+const REVEAL_AUTO_MS_TOKEN = 15 * 1000; // 本轮有人可用免酒令牌：留足决定时间
+const revealTimers = new Map();         // roomCode -> setTimeout 句柄
+
+function clearRevealTimer(roomCode) {
+  const t = revealTimers.get(roomCode);
+  if (t) { clearTimeout(t); revealTimers.delete(roomCode); }
+  const game = rooms.get(roomCode);
+  if (game) game.revealDeadline = null;
+}
+
+// 根据房间当前阶段，确保亮数阶段有且仅有一个自动推进定时器
+function syncRevealTimer(roomCode) {
+  const game = rooms.get(roomCode);
+  if (!game || game.phase !== 'reveal') { clearRevealTimer(roomCode); return; }
+  if (revealTimers.has(roomCode)) return; // 本次亮数已安排
+  const r = game.lastResult;
+  const hasToken = !!(r && r.eligibleTokenIds && r.eligibleTokenIds.length);
+  const delay = hasToken ? REVEAL_AUTO_MS_TOKEN : REVEAL_AUTO_MS;
+  game.revealDeadline = Date.now() + delay;
+  const t = setTimeout(() => {
+    revealTimers.delete(roomCode);
+    const g = rooms.get(roomCode);
+    if (!g || g.phase !== 'reveal') return;
+    g.proceed(g.hostId); // 替房主推进
+    syncRevealTimer(roomCode);
+    broadcast(roomCode);
+  }, delay);
+  revealTimers.set(roomCode, t);
+}
+
+// 复活选人阶段自动随机：10 秒内未达成有效复活则系统随机复活一名
+const REVIVAL_AUTO_MS = 10 * 1000;
+const revivalTimers = new Map(); // roomCode -> setTimeout 句柄
+
+function clearRevivalTimer(roomCode) {
+  const t = revivalTimers.get(roomCode);
+  if (t) { clearTimeout(t); revivalTimers.delete(roomCode); }
+  const game = rooms.get(roomCode);
+  if (game) game.revivalDeadline = null;
+}
+
+function syncRevivalTimer(roomCode) {
+  const game = rooms.get(roomCode);
+  if (!game || game.phase !== 'revival_select') { clearRevivalTimer(roomCode); return; }
+  if (revivalTimers.has(roomCode)) return; // 本次选人已安排
+  game.revivalDeadline = Date.now() + REVIVAL_AUTO_MS;
+  const t = setTimeout(() => {
+    revivalTimers.delete(roomCode);
+    const g = rooms.get(roomCode);
+    if (!g || g.phase !== 'revival_select') return;
+    g.revivalTimeout(); // 到点强制随机复活
+    syncRevivalTimer(roomCode);
+    broadcast(roomCode);
+  }, REVIVAL_AUTO_MS);
+  revivalTimers.set(roomCode, t);
+}
+
 // 给房间内每个 socket 推送各自裁剪后的状态
 function broadcast(roomCode) {
   const game = rooms.get(roomCode);
@@ -169,6 +228,7 @@ io.on('connection', (socket) => {
       case 'consent':      res = game.submitConsent(playerId, payload.choice); break;
       case 'endgamePick':  res = game.submitEndgamePick(playerId, payload.value); break;
       case 'revivalPick':  res = game.submitRevivalPick(playerId, payload.targetId); break;
+      case 'revivalRandom':res = game.submitRevivalRandom(playerId); break;
       case 'revivalDecide':res = game.submitRevivalDecision(playerId, payload.choice); break;
       case 'finalPick':    res = game.submitFinalPick(playerId, payload.value); break;
       case 'toggleToken':  res = game.toggleToken(playerId, payload.use); break;
@@ -184,6 +244,8 @@ io.on('connection', (socket) => {
       default: res = { ok: false, msg: '未知操作' };
     }
     cb && cb(res);
+    syncRevealTimer(roomCode);  // 进入亮数则起倒计时，离开则清除（含房主手动「继续」）
+    syncRevivalTimer(roomCode); // 进入复活选人则起 10 秒倒计时，离开则清除
     broadcast(roomCode);
   });
 
@@ -215,7 +277,11 @@ io.on('connection', (socket) => {
     if (game.players.size === 0 || allGone) {
       setTimeout(() => {
         const g = rooms.get(roomCode);
-        if (g && [...g.players.values()].every(p => !p.connected)) rooms.delete(roomCode);
+        if (g && [...g.players.values()].every(p => !p.connected)) {
+          clearRevealTimer(roomCode);
+          clearRevivalTimer(roomCode);
+          rooms.delete(roomCode);
+        }
       }, 1000 * 60 * 10); // 10 分钟无人则回收
     }
     broadcast(roomCode);

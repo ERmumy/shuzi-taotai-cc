@@ -182,6 +182,7 @@ t('终局 2,2 → 复活 → 接受 → 最终局', () => {
   g.submitRevivalDecision(invited, 'accept');
   assert.equal(g.phase, 'final_collect');
   assert.equal(g.players.get(invited).tokens, 1, '复活得 1 令牌');
+  assert.equal(g.players.get(invited).permaTokens, 1, '复活令牌是永久令牌');
   assert.equal(g.fieldSize(), 3);
   // 最终局 1,2,3 → 报1者逃脱
   const three = g.alivePlayers().map(p => p.id);
@@ -231,6 +232,60 @@ t('最终局无独有：三人垫底各 6 口', () => {
   g.submitFinalPick(three[2], 1);
   const r = g.lastResult;
   three.forEach(id => assert.equal(r.drinks[id], 6));
+});
+
+console.log('复活选人 / 随机：');
+function toRevivalSelect() {
+  const g = toEndgame(makeGame(4));
+  const two = g.alivePlayers().map(p => p.id);
+  g.submitConsent(two[0], 'agree');
+  g.submitConsent(two[1], 'agree');
+  g.submitEndgamePick(two[0], 2);
+  g.submitEndgamePick(two[1], 2);
+  return g; // phase = revival_select
+}
+t('一方随机、一方指定 → 复活被指定者', () => {
+  const g = toRevivalSelect();
+  const two = g.alivePlayers().map(p => p.id);
+  const cand = g.escapedPlayers().map(p => p.id);
+  g.submitRevivalRandom(two[0]);
+  g.submitRevivalPick(two[1], cand[0]);
+  assert.equal(g.phase, 'revival_decide');
+  assert.equal(g.invitedId, cand[0]);
+});
+t('双方都随机 → 随机复活一名通关玩家', () => {
+  const g = toRevivalSelect();
+  const two = g.alivePlayers().map(p => p.id);
+  const cand = g.escapedPlayers().map(p => p.id);
+  g.submitRevivalRandom(two[0]);
+  g.submitRevivalRandom(two[1]);
+  assert.equal(g.phase, 'revival_decide');
+  assert.ok(cand.includes(g.invitedId));
+});
+t('双方指定不同 → 不立即结算，仍在选人阶段', () => {
+  const g = toRevivalSelect();
+  const two = g.alivePlayers().map(p => p.id);
+  const cand = g.escapedPlayers().map(p => p.id);
+  assert.ok(cand.length >= 2);
+  g.submitRevivalPick(two[0], cand[0]);
+  g.submitRevivalPick(two[1], cand[1]);
+  assert.equal(g.phase, 'revival_select');
+});
+t('双方一致 → 立即复活该玩家', () => {
+  const g = toRevivalSelect();
+  const two = g.alivePlayers().map(p => p.id);
+  const cand = g.escapedPlayers().map(p => p.id);
+  g.submitRevivalPick(two[0], cand[0]);
+  g.submitRevivalPick(two[1], cand[0]);
+  assert.equal(g.phase, 'revival_decide');
+  assert.equal(g.invitedId, cand[0]);
+});
+t('倒计时结束（有人没选/不同）→ 自动随机复活', () => {
+  const g = toRevivalSelect();
+  const cand = g.escapedPlayers().map(p => p.id);
+  g.revivalTimeout(); // 谁都没选
+  assert.equal(g.phase, 'revival_decide');
+  assert.ok(cand.includes(g.invitedId));
 });
 
 console.log('掉线 / 重连：');
@@ -318,6 +373,41 @@ t('20 人开局可正常跑到终局', () => {
   const g = toEndgame(makeGame(20));
   assert.equal(g.phase, 'endgame_consent');
   assert.equal(g.fieldSize(), 2);
+});
+
+console.log('免酒令牌延续规则：');
+t('重开一局：普通令牌清零，复活永久令牌保留', () => {
+  const g = makeGame(3);
+  const a = g.players.get('p0'), b = g.players.get('p1');
+  a.tokens = 1; a.permaTokens = 0;            // p0：1 枚普通令牌
+  b.tokens = 2; b.permaTokens = 1;            // p1：1 普通 + 1 永久
+  g.restart('p0');                            // p0 是房主
+  assert.equal(g.players.get('p0').tokens, 0, '普通令牌重开清零');
+  assert.equal(g.players.get('p1').tokens, 1, '只保留永久令牌');
+  assert.equal(g.players.get('p1').permaTokens, 1);
+});
+t('开新局：普通令牌清零，复活永久令牌带入下一大局', () => {
+  const g = makeGame(3);
+  const a = g.players.get('p0');
+  a.tokens = 2; a.permaTokens = 1;            // 1 普通 + 1 永久
+  g._toGameOver(false);                       // 结束当前大局
+  g.phase = 'lobby';
+  g.startGame('p0');
+  assert.equal(g.players.get('p0').tokens, 1, '开新局保留 1 枚永久令牌');
+  assert.equal(g.players.get('p0').permaTokens, 1);
+});
+t('使用令牌优先消耗普通，保留永久', () => {
+  const g = makeGame(4);
+  // 撞车制造罚酒：p0/p1 都报 1（撞车喝酒），p2 报 2、p3 报 3（独有）
+  const p0 = g.players.get('p0');
+  p0.tokens = 2; p0.permaTokens = 1;          // 1 普通 + 1 永久
+  pickAll(g, { p0: 1, p1: 1, p2: 2, p3: 3 });
+  const r = g.lastResult;
+  assert.ok(r.eligibleTokenIds.includes('p0'), 'p0 撞车且有令牌，应可用');
+  g.toggleToken('p0', true);
+  g.proceed('p0');
+  assert.equal(g.players.get('p0').tokens, 1, '消耗 1 枚后剩 1');
+  assert.equal(g.players.get('p0').permaTokens, 1, '消耗的是普通令牌，永久令牌保留');
 });
 
 console.log(`\n通过 ${passed} 项`);

@@ -71,6 +71,8 @@ class Game {
     this.invitedId = null;    // 复活被邀者
     this.revivalProposals = {}; // 终局两人各自提名
     this.tutorialMode = false; // 新手教学模式（开局由房主决定）
+    this.revealDeadline = null; // 亮数阶段自动推进的截止时间戳（由 server 设置/清除）
+    this.revivalDeadline = null; // 复活选人阶段自动随机的截止时间戳（由 server 设置/清除）
     this.createdAt = Date.now();
   }
 
@@ -93,9 +95,12 @@ class Game {
     this.lastResult = null;
     this.invitedId = null;
     this.revivalProposals = {};
+    this.revealDeadline = null;
+    this.revivalDeadline = null;
     this.log = [];
     for (const p of this.players.values()) {
-      p.alive = false; p.escaped = false; p.tokens = 0; p.drinks = 0;
+      // 普通令牌大局结束清零，仅保留“复活”得到的永久令牌
+      p.alive = false; p.escaped = false; p.tokens = (p.permaTokens || 0); p.drinks = 0;
       p.pick = null; p.consent = null; p.finishRank = null;
     }
     return { ok: true };
@@ -116,7 +121,8 @@ class Game {
       connected: true,
       alive: false,     // 是否在场上
       escaped: false,    // 是否已通关放生
-      tokens: 0,         // 免酒令牌数
+      tokens: 0,         // 当前可用免酒令牌总数（含永久），每个结算阶段至多用 1 枚
+      permaTokens: 0,    // 其中“复活获得”的永久令牌数：跨大局保留，普通令牌大局结束清零
       drinks: 0,         // 累计口数
       pick: null,        // 本轮出数（仅服务端可见，亮数时才公开）
       consent: null,     // 终局同意/拒绝
@@ -229,7 +235,8 @@ class Game {
     if (ps.length > 20) return { ok: false, msg: '最多 20 人' };
     this.tutorialMode = !!tutorialMode;
     for (const p of ps) {
-      p.alive = true; p.escaped = false; p.tokens = 0; p.drinks = 0;
+      // 普通令牌大局结束清零，仅保留“复活”得到的永久令牌
+      p.alive = true; p.escaped = false; p.tokens = (p.permaTokens || 0); p.drinks = 0;
       p.pick = null; p.consent = null; p.finishRank = null;
     }
     this.subRound = 1;
@@ -393,6 +400,7 @@ class Game {
   }
 
   // ---------- 复活：两人共同指定 ----------
+  // 决战者指定一名已通关玩家（可改选；双方选择实时互相可见）
   submitRevivalPick(id, targetId) {
     if (this.phase !== PHASE.REVIVAL_SELECT) return { ok: false };
     const p = this.players.get(id);
@@ -400,20 +408,60 @@ class Game {
     const target = this.players.get(targetId);
     if (!target || !target.escaped) return { ok: false, msg: '只能邀请已通关玩家' };
     this.revivalProposals[id] = targetId;
-    const two = this.alivePlayers();
-    const picks = two.map(pl => this.revivalProposals[pl.id]);
-    if (picks.every(x => x != null)) {
-      if (picks[0] === picks[1]) {
-        this.invitedId = picks[0];
-        this.phase = PHASE.REVIVAL_DECIDE;
-        this._log(`📨 邀请 ${this.players.get(this.invitedId).name} 回归，等待其决定`);
-      } else {
-        // 不一致，重置重选
-        this.revivalProposals = {};
-        return { ok: true, msg: '两人提名不一致，请重新协商' };
-      }
-    }
+    this._tryResolveRevival();
     return { ok: true };
+  }
+
+  // 决战者选择「随机」（可改选；双方选择实时互相可见）
+  submitRevivalRandom(id) {
+    if (this.phase !== PHASE.REVIVAL_SELECT) return { ok: false };
+    const p = this.players.get(id);
+    if (!p || !p.alive) return { ok: false };
+    this.revivalProposals[id] = 'random';
+    this._tryResolveRevival();
+    return { ok: true };
+  }
+
+  // 10 秒倒计时结束：仍未达成有效复活（双方指定不同 / 有人没选）→ 系统强制随机复活
+  revivalTimeout() {
+    if (this.phase !== PHASE.REVIVAL_SELECT) return { ok: false };
+    this._doRevival(this._pickRandomEscaped(), '倒计时结束，系统随机');
+    return { ok: true };
+  }
+
+  // 从已通关玩家里随机取一名
+  _pickRandomEscaped() {
+    const cands = this.escapedPlayers();
+    if (!cands.length) return null;
+    return cands[Math.floor(Math.random() * cands.length)];
+  }
+
+  // 根据双方当前选择尝试立即结算；仅“双方指定不同 / 有人没选”时不结算（留给倒计时）
+  _tryResolveRevival() {
+    const two = this.alivePlayers();
+    if (two.length < 2) return;
+    const a = this.revivalProposals[two[0].id];
+    const b = this.revivalProposals[two[1].id];
+    if (a == null || b == null) return; // 有人还没选 → 等倒计时
+    if (a === 'random' && b === 'random') {
+      this._doRevival(this._pickRandomEscaped(), '双方都选随机');
+    } else if (a === 'random' || b === 'random') {
+      const targetId = a === 'random' ? b : a; // 以指定的一方为准
+      this._doRevival(this.players.get(targetId), '一方随机、一方指定');
+    } else if (a === b) {
+      this._doRevival(this.players.get(a), '双方一致');
+    }
+    // a !== b 且都是具体玩家 → 不结算，双方可改选，等 10 秒倒计时兜底
+  }
+
+  // 落地复活：进入“被邀者决定”阶段
+  _doRevival(target, reason) {
+    if (!target || !target.escaped) return;
+    this.invitedId = target.id;
+    this.revivalProposals = {};
+    this.revivalDeadline = null;
+    this.phase = PHASE.REVIVAL_DECIDE;
+    this._log(`🎲 ${reason}，邀请 ${target.name} 回归，等待其决定`);
   }
 
   // ---------- 复活：被邀者决定 ----------
@@ -423,7 +471,8 @@ class Game {
     const invitee = this.players.get(id);
     const two = this.alivePlayers();
     if (choice === 'accept') {
-      invitee.tokens += 1;       // 正式免酒令牌
+      invitee.tokens += 1;       // 复活令牌：计入可用总数
+      invitee.permaTokens = (invitee.permaTokens || 0) + 1; // 且为永久令牌，跨大局保留
       invitee.escaped = false;
       invitee.alive = true;
       invitee.finishRank = null;
@@ -503,6 +552,8 @@ class Game {
         const p = this.players.get(pid);
         if (p && p.tokens > 0) {
           p.tokens -= 1;
+          // 优先消耗普通令牌，尽量保留“复活”得到的永久令牌
+          if ((p.permaTokens || 0) > p.tokens) p.permaTokens = p.tokens;
           r.finalDrinks[pid] = Math.max(0, r.drinks[pid] - SIP_PER_CUP);
         }
       }
@@ -596,7 +647,7 @@ class Game {
     const players = [...this.players.values()].map(p => ({
       id: p.id, name: p.name, avatar: p.avatar,
       connected: p.connected, alive: p.alive, escaped: p.escaped,
-      tokens: p.tokens, drinks: p.drinks, finishRank: p.finishRank,
+      tokens: p.tokens, permaTokens: p.permaTokens || 0, drinks: p.drinks, finishRank: p.finishRank,
       isHost: p.id === this.hostId,
       hasPicked: p.pick != null,          // 出数阶段只暴露“是否已出”
       consent: this.phase === PHASE.ENDGAME_CONSENT ? (p.consent != null) : undefined,
@@ -615,12 +666,20 @@ class Game {
       basePenalty: basePenaltyFor(this.subRound),
       players,
       log: this.log.slice(-12),
+      // 亮数阶段自动推进的剩余毫秒（用相对值消除客户端时钟偏差）
+      revealRemainingMs: (this.phase === PHASE.REVEAL && this.revealDeadline)
+        ? Math.max(0, this.revealDeadline - Date.now()) : null,
+      // 复活选人阶段自动随机的剩余毫秒
+      revivalRemainingMs: (this.phase === PHASE.REVIVAL_SELECT && this.revivalDeadline)
+        ? Math.max(0, this.revivalDeadline - Date.now()) : null,
       you: me ? {
         id: me.id, alive: me.alive, escaped: me.escaped,
-        tokens: me.tokens, drinks: me.drinks,
+        tokens: me.tokens, permaTokens: me.permaTokens || 0, drinks: me.drinks,
         pick: me.pick, consent: me.consent,
       } : null,
       invitedId: this.invitedId,
+      // 复活选人阶段：双方当前选择（'random' 或 已通关玩家 id），互相可见
+      revivalChoices: this.phase === PHASE.REVIVAL_SELECT ? { ...this.revivalProposals } : null,
     };
 
     if (this.phase === PHASE.REVEAL && this.lastResult) {
