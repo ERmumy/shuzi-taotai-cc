@@ -558,9 +558,14 @@ function renderReveal() {
   }).join('');
 
   const secs = autoSecsLeft();
-  const proceed = state.youAreHost
-    ? `<button class="btn btn-primary btn-block" data-act="proceed">${r.terminal ? '查看结算 🏁' : '立即继续 ▶'}　<span class="muted">(<span id="autoCountdown">${secs}</span>s 后自动)</span></button>`
-    : `<div class="waiting"><span id="autoCountdown">${secs}</span> 秒后自动${r.terminal ? '结算' : '进下一轮'}<span class="dots"></span></div>`;
+  const hasDrinkers = Object.values(r.drinks || {}).some(drinks => drinks > 0);
+  const proceed = hasDrinkers
+    ? (state.youAreHost
+      ? `<button class="btn btn-primary btn-block" data-act="proceed">${r.terminal ? '确认大家喝完，查看结算 🏁' : '确认大家喝完，继续 ▶'}</button>`
+      : `<div class="waiting">等待房主确认大家喝完<span class="dots"></span></div>`)
+    : (state.youAreHost
+      ? `<button class="btn btn-primary btn-block" data-act="proceed">${r.terminal ? '查看结算 🏁' : '立即继续 ▶'}　<span class="muted">(<span id="autoCountdown">${secs}</span>s 后自动)</span></button>`
+      : `<div class="waiting"><span id="autoCountdown">${secs}</span> 秒后自动${r.terminal ? '结算' : '进下一轮'}<span class="dots"></span></div>`);
 
   const hint = hintBanner(revealHint(r));
   return `

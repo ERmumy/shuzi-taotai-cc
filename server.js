@@ -110,8 +110,10 @@ function clearRevealTimer(roomCode) {
 function syncRevealTimer(roomCode) {
   const game = rooms.get(roomCode);
   if (!game || game.phase !== 'reveal') { clearRevealTimer(roomCode); return; }
-  if (revealTimers.has(roomCode)) return; // 本次亮数已安排
   const r = game.lastResult;
+  const hasDrinkers = !!(r && Object.values(r.drinks || {}).some(drinks => drinks > 0));
+  if (hasDrinkers) { clearRevealTimer(roomCode); return; }
+  if (revealTimers.has(roomCode)) return; // 本次亮数已安排
   const hasToken = !!(r && r.eligibleTokenIds && r.eligibleTokenIds.length);
   const delay = hasToken ? REVEAL_AUTO_MS_TOKEN : REVEAL_AUTO_MS;
   game.revealDeadline = Date.now() + delay;
